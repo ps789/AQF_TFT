@@ -1,19 +1,11 @@
-# upgraded from https://github.com/google-research/google-research/tree/master/tft
+# Adapted from https://github.com/greatwhiz/tft_tf2
 
-# Temporal Fusion Transformers for Interpretable Multi-horizon Time Series Forecasting
-
-Authors: Bryan Lim, Sercan Arik, Nicolas Loeff and Tomas Pfister
-
-Paper link: https://arxiv.org/pdf/1912.09363.pdf
-
-### Abstract
-> Multi-horizon forecasting problems often contain a complex mix of inputs -- including static (i.e. time-invariant) covariates, known future inputs, and other exogenous time series that are only observed historically -- without any prior information on how they interact with the target. While several deep learning models have been proposed for multi-step prediction, they typically comprise black-box models which do not account for the full range of inputs present in common scenarios. In this paper, we introduce the Temporal Fusion Transformer (TFT) -- a novel attention-based architecture which combines high-performance multi-horizon forecasting with interpretable insights into temporal dynamics. To learn temporal relationships at different scales, the TFT utilizes recurrent layers for local processing and interpretable self-attention layers for learning long-term dependencies. The TFT also uses specialized components for the judicious selection of relevant features and a series of gating layers to suppress unnecessary components, enabling high performance in a wide range of regimes. On a variety of real-world datasets, we demonstrate significant performance improvements over existing benchmarks, and showcase three practical interpretability use-cases of TFT.
-
+# Autoregressive Quantile Flows using a Temporal Fusion Transformer Base
 
 ## Code Organisation
-This repository contains the source code for the Temporal Fusion Transformer, along with the training and evaluation routines for the experiments described in the paper.
+This repository contains the source code for an Autoregressive Quantile Flow using a Temporal Fusion Transformer structure and experiments on time-series datasets.
 
-The key modules for experiments are organised as:
+As adapted from the TFT repo, the structure is organized as:
 
 * **data\_formatters**: Stores the main dataset-specific column definitions, along with functions for data transformation and normalization. For compatibility with the TFT, new experiments should implement a unique ``GenericDataFormatter`` (see **base.py**), with examples for the default experiments shown in the other python files.
 * **expt\_settings**: Holds the folder paths and configurations for the default experiments,
@@ -39,9 +31,9 @@ where ``$EXPT`` can be any of {``volatility``, ``electricity``, ``traffic``, ``f
 ### Step 2: Train and evaluate network
 To train the network with the optimal default parameters, run:
 ```bash
-python3 -m script_train_fixed_params $EXPT $OUTPUT_FOLDER $USE_GPU 
+python3 -m script_train_fixed_params $EXPT $OUTPUT_FOLDER $USE_GPU $AQF
 ```
-where ``$EXPT`` and ``$OUTPUT_FOLDER`` are as above, ``$GPU`` denotes whether to run with GPU support (options are {``'yes'`` or``'no'``}).
+where ``$EXPT`` and ``$OUTPUT_FOLDER`` are as above, ``$GPU`` denotes whether to run with GPU support (options are {``'yes'`` or``'no'``}), and ``$AQF`` denotes whether to run using the AQF formulation or the original TFT formulation.
 
 For full hyperparameter optimization, run:
 ```bash
@@ -100,19 +92,11 @@ As an optional step, change the number of random search iterations if required:
 ```python
 @property
   def hyperparam_iterations(self):
-    
+
     my_search_iterations=1000
-    
+
     if self.experiment == 'example':
       return my_search_iterations
     else:
       return 240 if self.experiment == 'volatility' else 60
-```
-
-
-### Step 3: Run training script
-Full hyperparameter optimization can then be run as per the previous section, e.g.:
-```bash
-python3 -m script_hyperparam_opt example . yes yes
-
 ```

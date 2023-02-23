@@ -380,9 +380,57 @@ class TFTDataCache(object):
     """Retuns boolean indicating whether key is present in cache."""
 
     return key in cls._data_cache
+class CustomModel(tf.keras.Model):
+    def __init__(self, inputs, outputs):
+        super().__init__(inputs, outputs)
+        self.quantile_loss = QuantileLossCalculatorSampling().quantile_loss
+    def train_step(self, data):
+        # Unpack the data. Its structure depends on your model and
+        # on what you pass to `fit()`.
+        x, y = data
+        alpha = tf.random.uniform(shape=(x.shape[0], x.shape[1], y.shape[2]))
+        target_alpha = alpha[:, (x.shape[1]-y.shape[1]):,:]
+        with tf.GradientTape() as tape:
+            y_pred = self(tf.concat([x[:, :, :-1], alpha], 2), training=True)  # Forward pass
+            # Compute the loss value
+            loss = self.quantile_loss(y, y_pred, target_alpha)
 
+        # Compute gradients
+        trainable_vars = self.trainable_variables
+        gradients = tape.gradient(loss, trainable_vars)
+        # Update weights
+        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+        # Update metrics (includes the metric that tracks the loss)
+        self.compiled_metrics.update_state(y, y_pred)
+        # Return a dict mapping metric names to current value
+        return {m.name: m.result() for m in self.metrics}
+class QuantileLossCalculatorSampling(object):
+    """Computes the combined quantile loss for prespecified quantiles.
+
+    Attributes:
+      quantiles: Quantiles to compute losses
+    """
+
+    def __init__(self):
+      """Initializes computer with quantiles for loss calculations.
+
+      Args:
+        quantiles: Quantiles to use for computations.
+      """
+
+    def quantile_loss(self, a, b, quantiles):
+      """Returns quantile loss for specified quantiles.
+
+      Args:
+        a: Targets
+        b: Predictions
+      """
+      loss = utils.tensorflow_quantile_loss_sampling(
+          a,
+          b, quantiles)
+      return loss
 # TFT model definitions.
-class TemporalFusionTransformer(object):
+class TemporalFusionTransformerAQF(object):
   """Defines Temporal Fusion Transformer.
 
   Attributes:
@@ -428,7 +476,7 @@ class TemporalFusionTransformer(object):
 
     # Data parameters
     self.time_steps = int(params['total_time_steps'])
-    self.input_size = int(params['input_size'])
+    self.input_size = int(params['input_size'])+1
     self.output_size = int(params['output_size'])
     self.category_counts = json.loads(str(params['category_counts']))
     self.n_multiprocessing_workers = int(params['multiprocessing_workers'])
@@ -656,7 +704,7 @@ class TemporalFusionTransformer(object):
         ]
       split_data_map[identifier] = df
 
-    inputs = np.zeros((max_samples, self.time_steps, self.input_size))
+    inputs = np.zeros((max_samples, self.time_steps, self.input_size-1))
     outputs = np.zeros((max_samples, self.time_steps, self.output_size))
     time = np.empty((max_samples, self.time_steps, 1), dtype=object)
     identifiers = np.empty((max_samples, self.time_steps, 1), dtype=object)
@@ -778,9 +826,9 @@ class TemporalFusionTransformer(object):
     """Returns graph defining layers of the TFT."""
 
     # Size definitions.
-    time_steps = self.time_steps
-    combined_input_size = self.input_size
-    encoder_steps = self.num_encoder_steps
+    time_steps = self.time_steps #192
+    combined_input_size = self.input_size #5
+    encoder_steps = self.num_encoder_steps#168
 
     # Inputs.
     all_inputs = tf.keras.layers.Input(
@@ -1039,7 +1087,7 @@ class TemporalFusionTransformer(object):
           = self._build_base_graph()
 
       outputs = tf.keras.layers.TimeDistributed(
-          tf.keras.layers.Dense(self.output_size * len(self.quantiles))) \
+          tf.keras.layers.Dense(self.output_size)) \
           (transformer_layer[Ellipsis, self.num_encoder_steps:, :])
 
       self._attention_components = attention_components
@@ -1047,48 +1095,14 @@ class TemporalFusionTransformer(object):
       adam = tf.compat.v1.keras.optimizers.Adam(
           learning_rate=self.learning_rate, clipnorm=self.max_gradient_norm)
 
-      model = tf.keras.Model(inputs=all_inputs, outputs=outputs)
+      model = CustomModel(inputs=all_inputs, outputs=outputs)
       #print(model.summary())
 
       valid_quantiles = self.quantiles
       output_size = self.output_size
 
-      class QuantileLossCalculator(object):
-        """Computes the combined quantile loss for prespecified quantiles.
-
-        Attributes:
-          quantiles: Quantiles to compute losses
-        """
-
-        def __init__(self, quantiles):
-          """Initializes computer with quantiles for loss calculations.
-
-          Args:
-            quantiles: Quantiles to use for computations.
-          """
-          self.quantiles = quantiles
-
-        def quantile_loss(self, a, b):
-          """Returns quantile loss for specified quantiles.
-
-          Args:
-            a: Targets
-            b: Predictions
-          """
-          quantiles_used = set(self.quantiles)
-
-          loss = 0.
-          for i, quantile in enumerate(valid_quantiles):
-            if quantile in quantiles_used:
-              loss += utils.tensorflow_quantile_loss(
-                  a[Ellipsis, output_size * i:output_size * (i + 1)],
-                  b[Ellipsis, output_size * i:output_size * (i + 1)], quantile)
-          return loss
-
-      quantile_loss = QuantileLossCalculator(valid_quantiles).quantile_loss
-
       model.compile(
-          loss=quantile_loss, optimizer=adam, sample_weight_mode='temporal')
+          loss = "mse", optimizer=adam, sample_weight_mode='temporal')
 
       self._input_placeholder = all_inputs
 
@@ -1142,16 +1156,16 @@ class TemporalFusionTransformer(object):
     val_data, val_labels, val_flags = _unpack(valid_data)
 
     all_callbacks = callbacks
-
+    data = np.concatenate([data, np.zeros(shape = (data.shape[0], data.shape[1], 1))], 2)
+    val_data = np.concatenate([val_data, np.zeros(shape = (val_data.shape[0], val_data.shape[1], 1))], 2)
     self.model.fit(
         x=data,
-        y=np.concatenate([labels, labels, labels], axis=-1),
+        y=labels,
         sample_weight=active_flags,
         epochs=self.num_epochs,
         batch_size=self.minibatch_size,
         validation_data=(val_data,
-                         np.concatenate([val_labels, val_labels, val_labels],
-                                        axis=-1), val_flags),
+                         val_labels, val_flags),
         callbacks=all_callbacks,
         shuffle=True,
         use_multiprocessing=True,
@@ -1185,12 +1199,13 @@ class TemporalFusionTransformer(object):
       raw_data = self._batch_data(data)
 
     inputs = raw_data['inputs']
+    inputs = np.concatenate([inputs, np.zeros(shape = (inputs.shape[0], inputs.shape[1], 1))], 2)
     outputs = raw_data['outputs']
     active_entries = self._get_active_locations(raw_data['active_entries'])
 
     metric_values = self.model.evaluate(
         x=inputs,
-        y=np.concatenate([outputs, outputs, outputs], axis=-1),
+        y=outputs,
         sample_weight=active_entries,
         workers=16,
         use_multiprocessing=True)
@@ -1217,12 +1232,15 @@ class TemporalFusionTransformer(object):
     time = data['time']
     identifier = data['identifier']
     outputs = data['outputs']
-
-    combined = self.model.predict(
-        inputs,
-        workers=16,
-        use_multiprocessing=True,
-        batch_size=self.minibatch_size)
+    result = []
+    for quantile in self.quantiles:
+        quantile_inputs = np.concatenate([inputs, quantile+np.zeros(shape = (inputs.shape[0], inputs.shape[1], 1))], 2)
+        result.append(self.model.predict(
+            quantile_inputs,
+            workers=16,
+            use_multiprocessing=True,
+            batch_size=self.minibatch_size))
+    combined = np.concatenate(result, -1)
 
     # Format output_csv
     if self.output_size != 1:

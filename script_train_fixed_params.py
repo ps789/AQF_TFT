@@ -37,6 +37,7 @@ import data_formatters.base
 import expt_settings.configs
 import libs.hyperparam_opt
 import libs.tft_model
+import libs.tft_model_aqf
 import libs.utils as utils
 import numpy as np
 import pandas as pd
@@ -45,6 +46,7 @@ import tensorflow.compat.v1 as tf
 ExperimentConfig = expt_settings.configs.ExperimentConfig
 HyperparamOptManager = libs.hyperparam_opt.HyperparamOptManager
 ModelClass = libs.tft_model.TemporalFusionTransformer
+ModelClassAQF = libs.tft_model_aqf.TemporalFusionTransformerAQF
 tf.experimental.output_all_intermediates(True)
 
 
@@ -53,6 +55,7 @@ def main(expt_name,
          model_folder,
          data_csv_path,
          data_formatter,
+         aqf,
          use_testing_mode=False):
     """Trains tft based on defined model params.
 
@@ -97,7 +100,7 @@ def main(expt_name,
 
     # Parameter overrides for testing only! Small sizes used to speed up script.
     if use_testing_mode:
-        fixed_params["num_epochs"] = 1
+        fixed_params["num_epochs"] = 1000
         params["hidden_layer_size"] = 5
         train_samples, valid_samples = 100, 10
 
@@ -121,7 +124,10 @@ def main(expt_name,
             tf.keras.backend.set_session(sess)
 
             params = opt_manager.get_next_parameters()
-            model = ModelClass(params, use_cudnn=use_gpu)
+            if aqf:
+                model = ModelClassAQF(params, use_cudnn=use_gpu)
+            else:
+                model = ModelClass(params, use_cudnn=use_gpu)
 
             if not model.training_data_cached():
                 model.cache_batched_data(train, "train", num_samples=train_samples)
@@ -143,7 +149,10 @@ def main(expt_name,
     with tf.Graph().as_default(), tf.Session(config=tf_config) as sess:
         tf.keras.backend.set_session(sess)
         best_params = opt_manager.get_best_params()
-        model = ModelClass(best_params, use_cudnn=use_gpu)
+        if aqf:
+            model = ModelClassAQF(best_params, use_cudnn=use_gpu)
+        else:
+            model = ModelClass(best_params, use_cudnn=use_gpu)
 
         model.load(opt_manager.hyperparam_folder)
 
@@ -153,6 +162,7 @@ def main(expt_name,
         print("Computing test loss")
         output_map = model.predict(test, return_targets=True)
         targets = data_formatter.format_predictions(output_map["targets"])
+        p10_forecast = data_formatter.format_predictions(output_map["p10"])
         p50_forecast = data_formatter.format_predictions(output_map["p50"])
         p90_forecast = data_formatter.format_predictions(output_map["p90"])
 
@@ -162,7 +172,9 @@ def main(expt_name,
                 col for col in data.columns
                 if col not in {"forecast_time", "identifier"}
             ]]
-
+        p10_loss = utils.numpy_normalised_quantile_loss(
+            extract_numerical_data(targets), extract_numerical_data(p10_forecast),
+            0.1)
         p50_loss = utils.numpy_normalised_quantile_loss(
             extract_numerical_data(targets), extract_numerical_data(p50_forecast),
             0.5)
@@ -179,8 +191,8 @@ def main(expt_name,
     for k in best_params:
         print(k, " = ", best_params[k])
     print()
-    print("Normalised Quantile Loss for Test Data: P50={}, P90={}".format(
-        p50_loss.mean(), p90_loss.mean()))
+    print("Normalised Quantile Loss for Test Data: P10={}, P50={}, P90={}".format(
+        p10_loss.mean(), p50_loss.mean(), p90_loss.mean()))
 
 
 if __name__ == "__main__":
@@ -213,15 +225,23 @@ if __name__ == "__main__":
             choices=["yes", "no"],
             default="no",
             help="Whether to use gpu for training.")
+        parser.add_argument(
+            "aqf",
+            metavar="a",
+            type=str,
+            nargs="?",
+            choices=["yes", "no"],
+            default="no",
+            help="Whether to use AQF style training.")
 
         args = parser.parse_known_args()[0]
 
         root_folder = None if args.output_folder == "." else args.output_folder
 
-        return args.expt_name, root_folder, args.use_gpu == "yes"
+        return args.expt_name, root_folder, args.use_gpu == "yes", args.aqf == "yes"
 
 
-    name, output_folder, use_tensorflow_with_gpu = get_args()
+    name, output_folder, use_tensorflow_with_gpu, aqf = get_args()
 
     print("Using output folder {}".format(output_folder))
 
@@ -235,4 +255,5 @@ if __name__ == "__main__":
         model_folder=os.path.join(config.model_folder, "fixed"),
         data_csv_path=config.data_csv_path,
         data_formatter=formatter,
+        aqf = aqf,
         use_testing_mode=True)  # Change to false to use original default params

@@ -88,6 +88,34 @@ def tensorflow_quantile_loss(y, y_pred, quantile):
 
   return tf.reduce_sum(input_tensor=q_loss, axis=-1)
 
+# Loss functions.
+def tensorflow_quantile_loss_sampling(y, y_pred, quantiles):
+  """Computes quantile loss for tensorflow.
+
+  Standard quantile loss as defined in the "Training Procedure" section of
+  the main TFT paper
+
+  Args:
+    y: Targets
+    y_pred: Predictions
+    quantile: Quantile to use for loss calculations (between 0 & 1)
+
+  Returns:
+    Tensor for quantile loss.
+  """
+
+  # Checks quantile
+  if tf.reduce_any(quantile < 0) or tf.reduce_any(quantile > 1):
+    raise ValueError(
+        'Illegal quantile value={}! Values should be between 0 and 1.'.format(
+            quantile))
+
+  prediction_underflow = y - y_pred
+  q_loss = quantile * tf.maximum(prediction_underflow, 0.) + (
+      1. - quantile) * tf.maximum(-prediction_underflow, 0.)
+
+  return tf.reduce_sum(input_tensor=q_loss, axis=-1)
+
 
 def numpy_normalised_quantile_loss(y, y_pred, quantile):
   """Computes normalised quantile loss for numpy arrays.
@@ -194,7 +222,7 @@ def load(tf_session, model_folder, cp_name, scope=None, verbose=False):
 
   print('Loading model from {0}'.format(load_path))
 
-  print_weights_in_checkpoint(model_folder, cp_name)
+  #print_weights_in_checkpoint(model_folder, cp_name)
 
   initial_vars = set(
       [v.name for v in tf.compat.v1.get_default_graph().as_graph_def().node])
